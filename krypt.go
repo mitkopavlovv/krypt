@@ -3,98 +3,73 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
-
-	pkcs7 "github.com/mergermarket/go-pkcs7"
 )
 
-func Encrypt(fileName string) (map[string][]byte, error) {
-	var resultMap map[string][]byte
-	unencrypted, err := ioutil.ReadFile(fileName)
-	if err != nil {
-		return resultMap, err
-	}
-	resultMap = make(map[string][]byte)
-	key := make([]byte, 32)
-	rand.Read(key)
-	plainText := unencrypted
-	plainText, err = pkcs7.Pad(plainText, aes.BlockSize)
-	if err != nil {
-		return resultMap, err
-	}
-	if len(plainText)%aes.BlockSize != 0 {
-		err := fmt.Errorf(`plainText: "%s" has the wrong block size`, plainText)
-		return resultMap, err
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return resultMap, err
-	}
-
-	cipherText := make([]byte, aes.BlockSize+len(plainText))
-	iv := cipherText[:aes.BlockSize]
-
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return resultMap, err
-
-	}
-
-	mode := cipher.NewCBCEncrypter(block, iv)
-
-	mode.CryptBlocks(cipherText[aes.BlockSize:], plainText)
-
-	resultMap["key"] = key
-	resultMap["encrypted"] = cipherText
-
-	return resultMap, nil
+func createHash(key string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(key))
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func Decrypt(encFile string, keyFile string) ([]byte, error) {
-	/*
-		fencFile, _ := ioutil.ReadFile(encFile)
-		enc := []byte(fencFile)
-		fkeyFile, _ := ioutil.ReadFile(keyFile)
-		key := []byte(fkeyFile)
-	*/
-	enc := []byte(encFile)
-	key := []byte(keyFile)
-	cipherText, _ := hex.DecodeString(string(enc))
-	fmt.Println(len(enc))
-	fmt.Println(len(key))
+func encrypt(data []byte, passphrase string) []byte {
+	block, _ := aes.NewCipher([]byte(createHash(passphrase)))
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err.Error())
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		panic(err.Error())
+	}
+	ciphertext := gcm.Seal(nonce, nonce, data, nil)
+	return ciphertext
+}
+
+func decrypt(data []byte, passphrase string) []byte {
+	key := []byte(createHash(passphrase))
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		panic(err.Error())
 	}
-
-	if len(cipherText) < aes.BlockSize {
-		panic("cipherText too short")
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err.Error())
 	}
-	iv := cipherText[:aes.BlockSize]
-	cipherText = cipherText[aes.BlockSize:]
-	if len(cipherText)%aes.BlockSize != 0 {
-		panic("cipherText is not a multiple of the block size")
+	nonceSize := gcm.NonceSize()
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		panic(err.Error())
 	}
-
-	mode := cipher.NewCBCDecrypter(block, iv)
-	mode.CryptBlocks(cipherText, cipherText)
-
-	cipherText, _ = pkcs7.Unpad(cipherText, aes.BlockSize)
-	return cipherText, nil
+	return plaintext
 }
 
 func main() {
-	encryptedFile, err := Encrypt("ddos-nzok.txt")
+	encAction := flag.String("action", "str", "a string")
+	encPass := flag.String("passw", "str", "a string")
+	encFilename := flag.String("filename", "str", "a string")
+	flag.Parse()
+	//fileName := "priv_esc.jpeg"
+	data, err := ioutil.ReadFile(*encFilename)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("File reading error", err)
 	}
-	fmt.Println(encryptedFile)
-	decryptedFile, err := Decrypt(string(encryptedFile["encrypted"]), string(encryptedFile["key"]))
-	fmt.Println(decryptedFile)
-	//ioutil.WriteFile("ddos-nzok.txt.enc", encryptedFile["encrypted"], 0777)
-	//ioutil.WriteFile("key.enc", encryptedFile["key"], 0777)
+
+	if *encAction == "encrypt" {
+		encr := encrypt(data, *encPass)
+		ioutil.WriteFile(*encFilename, encr, 0777)
+	} else if *encAction == "decrypt" {
+		decr := decrypt(data, *encPass)
+		ioutil.WriteFile(*encFilename, decr, 0777)
+	} else {
+		fmt.Printf("Flags\n-action=encrypt/decrypt\n-passw=somePassHere\n-filename=fileNameHere")
+	}
+
 }
